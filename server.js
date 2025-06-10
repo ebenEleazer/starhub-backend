@@ -34,6 +34,7 @@ app.use(cors({ origin: FRONTEND_URL }));
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
+console.log("Loaded PORT from env:", process.env.PORT);
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "yourSecretKey";
 
