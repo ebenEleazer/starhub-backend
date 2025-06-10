@@ -6,14 +6,22 @@ const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const { Server } = require("socket.io");
+const { createClient } = require("@supabase/supabase-js");
 require("dotenv").config();
 
 const app = express();
 const server = http.createServer(app);
 
-// === IMPORTANT: Set this to your frontend Vercel URL ===
+// === FRONTEND URL ===
 const FRONTEND_URL = "https://starhub-2cmo.vercel.app";
 
+// === Supabase Setup ===
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+// === Socket.io Setup ===
 const io = new Server(server, {
   cors: {
     origin: FRONTEND_URL,
@@ -21,6 +29,7 @@ const io = new Server(server, {
   }
 });
 
+// === Middleware ===
 app.use(cors({ origin: FRONTEND_URL }));
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -28,12 +37,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "yourSecretKey";
 
-// === In-memory stores ===
-const users = [];
-let articles = [];
-let nextId = 1;
-
-// === Multer Setup for Uploads ===
+// === Multer Upload Setup ===
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, "uploads"),
   filename: (req, file, cb) => {
@@ -44,30 +48,61 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// === Auth Routes ===
+// === Register ===
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
-  if (users.find(u => u.email === email)) {
+
+  const { data: existingUser } = await supabase
+    .from("users")
+    .select("*")
+    .eq("email", email)
+    .maybeSingle();
+
+  if (existingUser) {
     return res.status(400).json({ error: "User already exists" });
   }
+
   const hash = await bcrypt.hash(password, 10);
-  users.push({ email, password: hash });
+
+  const { error } = await supabase.from("users").insert([
+    { email, password: hash }
+  ]);
+
+  if (error) {
+    return res.status(500).json({ error: "Database error" });
+  }
+
   res.status(201).json({ message: "User registered successfully" });
 });
 
+// === Login ===
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
-  const user = users.find(u => u.email === email);
-  if (!user || !(await bcrypt.compare(password, user.password))) {
+
+  const { data: user, error } = await supabase
+    .from("users")
+    .select("*")
+    .eq("email", email)
+    .maybeSingle();
+
+  if (error || !user) {
     return res.status(400).json({ error: "Invalid credentials" });
   }
-  const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: "1h" });
+
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) {
+    return res.status(400).json({ error: "Invalid credentials" });
+  }
+
+  const token = jwt.sign({ email: user.email }, JWT_SECRET, { expiresIn: "1h" });
   res.json({ token });
 });
 
+// === Profile ===
 app.get("/api/profile", (req, res) => {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: "Missing token" });
+
   try {
     const token = auth.split(" ")[1];
     const decoded = jwt.verify(token, JWT_SECRET);
@@ -77,13 +112,14 @@ app.get("/api/profile", (req, res) => {
   }
 });
 
-// === Articles ===
-app.get("/api/articles", (req, res) => {
-  res.json(articles);
-});
+// === In-memory Articles (will move to DB later) ===
+let articles = [];
+let nextId = 1;
+
+app.get("/api/articles", (req, res) => res.json(articles));
 
 app.get("/api/articles/:id", (req, res) => {
-  const article = articles.find(a => a.id === parseInt(req.params.id));
+  const article = articles.find((a) => a.id === parseInt(req.params.id));
   if (!article) return res.status(404).json({ error: "Not found" });
   res.json(article);
 });
@@ -97,14 +133,15 @@ app.post("/api/articles", (req, res) => {
   res.status(201).json(article);
 });
 
-// === Image Upload ===
+// === Upload Route ===
 app.post("/api/upload", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
   const url = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
   res.status(200).json({ url });
 });
 
-// === Chat via Socket.io ===
+// === Chat with Socket.io ===
 io.on("connection", (socket) => {
   console.log("🔌 Socket connected:", socket.id);
 
@@ -122,7 +159,7 @@ io.on("connection", (socket) => {
   });
 });
 
-// === Start the server ===
+// === Start the Server ===
 server.listen(PORT, () => {
   console.log("🚀 Server running on port " + PORT);
 });
