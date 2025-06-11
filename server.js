@@ -12,7 +12,7 @@ require("dotenv").config();
 const app = express();
 const server = http.createServer(app);
 
-// === FRONTEND URL ===
+// === Frontend URL ===
 const FRONTEND_URL = "https://starhub-2cmo.vercel.app";
 
 // === Supabase Setup ===
@@ -34,7 +34,6 @@ app.use(cors({ origin: FRONTEND_URL }));
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-console.log("Loaded PORT from env:", process.env.PORT);
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "yourSecretKey";
 
@@ -49,7 +48,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// === Register ===
+// === Auth: Register ===
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
 
@@ -76,7 +75,7 @@ app.post("/api/register", async (req, res) => {
   res.status(201).json({ message: "User registered successfully" });
 });
 
-// === Login ===
+// === Auth: Login ===
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
@@ -99,7 +98,7 @@ app.post("/api/login", async (req, res) => {
   res.json({ token });
 });
 
-// === Profile ===
+// === Auth: Profile ===
 app.get("/api/profile", (req, res) => {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: "Missing token" });
@@ -113,28 +112,63 @@ app.get("/api/profile", (req, res) => {
   }
 });
 
-// === In-memory Articles (will move to DB later) ===
-let articles = [];
-let nextId = 1;
+// === Articles ===
+app.get("/api/articles", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("articles")
+      .select("*")
+      .order("created_at", { ascending: false });
 
-app.get("/api/articles", (req, res) => res.json(articles));
-
-app.get("/api/articles/:id", (req, res) => {
-  const article = articles.find((a) => a.id === parseInt(req.params.id));
-  if (!article) return res.status(404).json({ error: "Not found" });
-  res.json(article);
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error("Error fetching articles:", err.message);
+    res.status(500).json({ error: "Failed to fetch articles" });
+  }
 });
 
-app.post("/api/articles", (req, res) => {
-  const { title, content } = req.body;
-  if (!title || !content) return res.status(400).json({ error: "Missing fields" });
+app.get("/api/articles/:id", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("articles")
+      .select("*")
+      .eq("id", req.params.id)
+      .maybeSingle();
 
-  const article = { id: nextId++, title, content };
-  articles.push(article);
-  res.status(201).json(article);
+    if (error || !data) {
+      return res.status(404).json({ error: "Article not found" });
+    }
+
+    res.json(data);
+  } catch (err) {
+    console.error("Error fetching article:", err.message);
+    res.status(500).json({ error: "Failed to fetch article" });
+  }
 });
 
-// === Upload Route ===
+app.post("/api/articles", async (req, res) => {
+  const { title, content, author_email } = req.body;
+
+  if (!title || !content) {
+    return res.status(400).json({ error: "Title and content are required" });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("articles")
+      .insert([{ title, content, author_email }])
+      .select();
+
+    if (error) throw error;
+    res.status(201).json(data[0]);
+  } catch (err) {
+    console.error("Error creating article:", err.message);
+    res.status(500).json({ error: "Failed to create article" });
+  }
+});
+
+// === File Upload ===
 app.post("/api/upload", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -142,7 +176,7 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   res.status(200).json({ url });
 });
 
-// === Chat with Socket.io ===
+// === Chat with Supabase Storage ===
 io.on("connection", (socket) => {
   console.log("🔌 Socket connected:", socket.id);
 
@@ -151,8 +185,21 @@ io.on("connection", (socket) => {
     console.log(`User ${socket.id} joined room ${room}`);
   });
 
-  socket.on("chatMessage", ({ room, message }) => {
-    io.to(room).emit("chatMessage", message);
+  socket.on("chatMessage", async ({ room, sender, content }) => {
+    const message = {
+      room,
+      sender,
+      content,
+      created_at: new Date().toISOString()
+    };
+
+    try {
+      const { error } = await supabase.from("messages").insert([message]);
+      if (error) throw error;
+      io.to(room).emit("chatMessage", message);
+    } catch (err) {
+      console.error("Error saving message:", err.message);
+    }
   });
 
   socket.on("disconnect", () => {
@@ -160,7 +207,25 @@ io.on("connection", (socket) => {
   });
 });
 
-// === Start the Server ===
+// === Get Unique Channels from Supabase ===
+app.get("/api/channels", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("room")
+      .group("room");
+
+    if (error) throw error;
+
+    const uniqueRooms = data.map((entry) => entry.room);
+    res.json(uniqueRooms);
+  } catch (err) {
+    console.error("Error loading channels:", err.message);
+    res.status(500).json({ error: "Failed to load channels" });
+  }
+});
+
+// === Start Server ===
 server.listen(PORT, () => {
   console.log("🚀 Server running on port " + PORT);
 });
