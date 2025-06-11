@@ -249,6 +249,25 @@ app.get("/api/channels", async (req, res) => {
   }
 });
 
+app.get("/messages/:room", async (req, res) => {
+  const { room } = req.params;
+
+  try {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("room", room)
+      .order("created_at", { ascending: true });
+
+    if (error) throw error;
+
+    res.json(data);
+  } catch (err) {
+    console.error("Failed to load messages:", err.message);
+    res.status(500).json({ error: "Failed to load messages" });
+  }
+});
+
 // === Start Server ===
 server.listen(PORT, () => {
   console.log("🚀 Server running on port " + PORT);
