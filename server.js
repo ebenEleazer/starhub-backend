@@ -237,14 +237,12 @@ io.on("connection", (socket) => {
 app.get("/api/channels", async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from("messages")
-      .select("room")
-      .group("room");
+      .from("rooms")
+      .select("id, name"); // Get channel info directly from rooms
 
     if (error) throw error;
 
-    const uniqueRooms = data.map((entry) => entry.room);
-    res.json(uniqueRooms);
+    res.json(data);
   } catch (err) {
     console.error("Error loading channels:", err.message);
     res.status(500).json({ error: "Failed to load channels" });
