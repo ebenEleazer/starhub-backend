@@ -48,7 +48,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// === Auth: Register with Profile Fields ===
+// === Auth: Register ===
 app.post("/api/register", async (req, res) => {
   const { email, password, name, avatar, bio } = req.body;
 
@@ -100,7 +100,10 @@ app.post("/api/login", async (req, res) => {
   }
 
   const token = jwt.sign({ email: user.email }, JWT_SECRET, { expiresIn: "1h" });
-  res.json({ token, profile: { email: user.email, name: user.name, avatar: user.avatar, bio: user.bio } });
+  res.json({
+    token,
+    profile: { email: user.email, name: user.name, avatar: user.avatar, bio: user.bio }
+  });
 });
 
 // === Auth: Profile ===
@@ -160,7 +163,6 @@ app.get("/api/articles/:id", async (req, res) => {
   }
 });
 
-// ✅ FIXED Article Creation Route (uses JWT to get author_email)
 app.post("/api/articles", async (req, res) => {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: "Missing token" });
@@ -202,7 +204,7 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   res.status(200).json({ url });
 });
 
-// === Socket.io Chat ===
+// === Chat (Socket.io) ===
 io.on("connection", (socket) => {
   console.log("🔌 Socket connected:", socket.id);
 
@@ -233,15 +235,14 @@ io.on("connection", (socket) => {
   });
 });
 
-// === Get Unique Channels ===
+// === Get Channels ===
 app.get("/api/channels", async (req, res) => {
   try {
     const { data, error } = await supabase
       .from("rooms")
-      .select("id, name"); // Get channel info directly from rooms
+      .select("id, name");
 
     if (error) throw error;
-
     res.json(data);
   } catch (err) {
     console.error("Error loading channels:", err.message);
@@ -249,19 +250,18 @@ app.get("/api/channels", async (req, res) => {
   }
 });
 
-// === Get Messages for a Room ===
+// === Get Messages for Room (FIXED FIELDS) ===
 app.get("/api/messages/:room", async (req, res) => {
   const { room } = req.params;
 
   try {
     const { data, error } = await supabase
       .from("messages")
-      .select("id, content, sender_id, created_at, type, media_url")
+      .select("*") // Ensure all available fields are returned
       .eq("room", room)
       .order("created_at", { ascending: true });
 
     if (error) throw error;
-
     res.json(data);
   } catch (err) {
     console.error("Failed to load messages:", err.message);
