@@ -156,7 +156,6 @@ app.get("/api/channels", async (req, res) => {
   }
 });
 
-// ✅ ✅ ✅ SOCKET.IO CHAT FIX ✅ ✅ ✅
 io.on("connection", (socket) => {
   console.log("🔌 Socket connected:", socket.id);
 
@@ -165,10 +164,11 @@ io.on("connection", (socket) => {
     console.log(`User ${socket.id} joined room ${room}`);
   });
 
-  socket.on("chatMessage", async ({ room, message }) => {
+  socket.on("chatMessage", async ({ room, message, sender = "anonymous" }) => {
     const msgObj = {
       room,
       message,
+      sender,
       created_at: new Date().toISOString()
     };
 
