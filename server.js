@@ -160,8 +160,21 @@ app.get("/api/articles/:id", async (req, res) => {
   }
 });
 
+// ✅ FIXED Article Creation Route (uses JWT to get author_email)
 app.post("/api/articles", async (req, res) => {
-  const { title, content, author_email } = req.body;
+  const auth = req.headers.authorization;
+  if (!auth) return res.status(401).json({ error: "Missing token" });
+
+  let author_email;
+  try {
+    const token = auth.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    author_email = decoded.email;
+  } catch {
+    return res.status(403).json({ error: "Invalid token" });
+  }
+
+  const { title, content } = req.body;
 
   if (!title || !content) {
     return res.status(400).json({ error: "Title and content are required" });
