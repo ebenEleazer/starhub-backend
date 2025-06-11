@@ -249,13 +249,14 @@ app.get("/api/channels", async (req, res) => {
   }
 });
 
-app.get("/messages/:room", async (req, res) => {
+// === Get Messages for a Room ===
+app.get("/api/messages/:room", async (req, res) => {
   const { room } = req.params;
 
   try {
     const { data, error } = await supabase
       .from("messages")
-      .select("*")
+      .select("id, content, sender_id, created_at, type, media_url")
       .eq("room", room)
       .order("created_at", { ascending: true });
 
