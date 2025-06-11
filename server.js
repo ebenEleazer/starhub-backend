@@ -48,9 +48,13 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// === Auth: Register ===
+// === Auth: Register with Profile Fields ===
 app.post("/api/register", async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, name, avatar, bio } = req.body;
+
+  if (!email || !password || !name) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
 
   const { data: existingUser } = await supabase
     .from("users")
@@ -65,10 +69,11 @@ app.post("/api/register", async (req, res) => {
   const hash = await bcrypt.hash(password, 10);
 
   const { error } = await supabase.from("users").insert([
-    { email, password: hash }
+    { email, password: hash, name, avatar, bio }
   ]);
 
   if (error) {
+    console.error("Supabase error:", error.message);
     return res.status(500).json({ error: "Database error" });
   }
 
@@ -95,18 +100,26 @@ app.post("/api/login", async (req, res) => {
   }
 
   const token = jwt.sign({ email: user.email }, JWT_SECRET, { expiresIn: "1h" });
-  res.json({ token });
+  res.json({ token, profile: { email: user.email, name: user.name, avatar: user.avatar, bio: user.bio } });
 });
 
 // === Auth: Profile ===
-app.get("/api/profile", (req, res) => {
+app.get("/api/profile", async (req, res) => {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: "Missing token" });
 
   try {
     const token = auth.split(" ")[1];
     const decoded = jwt.verify(token, JWT_SECRET);
-    res.json({ message: `Welcome, ${decoded.email}` });
+
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("email, name, avatar, bio")
+      .eq("email", decoded.email)
+      .maybeSingle();
+
+    if (error || !user) throw error;
+    res.json(user);
   } catch {
     res.status(403).json({ error: "Invalid token" });
   }
@@ -176,7 +189,7 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   res.status(200).json({ url });
 });
 
-// === Chat with Supabase Storage ===
+// === Socket.io Chat ===
 io.on("connection", (socket) => {
   console.log("🔌 Socket connected:", socket.id);
 
@@ -207,7 +220,7 @@ io.on("connection", (socket) => {
   });
 });
 
-// === Get Unique Channels from Supabase ===
+// === Get Unique Channels ===
 app.get("/api/channels", async (req, res) => {
   try {
     const { data, error } = await supabase
