@@ -67,16 +67,17 @@ password = hashedPassword;
 
       // Upload to Supabase storage
       const { error: uploadError } = await supabase.storage
-  .from("chat-uploads") // ✅ your existing bucket
+  .from("chat-uploads") // make sure this matches your actual bucket
+  .upload(filename, req.file.buffer, {
+    contentType: req.file.mimetype,
+  });
 
-        .upload(filename, req.file.buffer, {
-          contentType: req.file.mimetype,
-        });
-
-      if (uploadError) {
-        console.error("Supabase upload error:", uploadError.message);
-        return res.status(500).json({ error: "Avatar upload failed" });
-      }
+if (uploadError) {
+  console.error("🛑 Supabase avatar upload failed:");
+  console.error("Message:", uploadError.message);
+  console.error("Full error object:", uploadError);
+  return res.status(500).json({ error: "Avatar upload failed" });
+}
 
       const { data } = supabase.storage.from("media").getPublicUrl(filename);
 avatarUrl = data.publicUrl;
@@ -118,7 +119,7 @@ app.post("/api/login", async (req, res) => {
   if (!valid) return res.status(400).json({ error: "Invalid credentials" });
 
   const token = jwt.sign({ email: user.email }, JWT_SECRET, { expiresIn: "1h" });
-  res.json({ token, profile: { email: user.email, name: user.name, avatar: user.avatar, bio: user.bio } });
+  res.json({ token, profile: { email: user.email, name: user.name, avatar: user.avatar_url, bio: user.bio, username: user.username } });
 });
 
 // === Profile Routes ===
@@ -130,7 +131,7 @@ app.get("/api/profile", async (req, res) => {
   try {
     const token = auth.split(" ")[1];
     const decoded = jwt.verify(token, JWT_SECRET);
-    const { data: user } = await supabase.from("users").select("email, name, avatar, bio").eq("email", decoded.email).maybeSingle();
+    const { data: user } = await supabase.from("users").select("email, name, avatar_url, bio, username").eq("email", decoded.email).maybeSingle();
     res.json(user);
   } catch {
     res.status(403).json({ error: "Invalid token" });
