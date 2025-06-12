@@ -34,19 +34,33 @@ const upload = multer({ storage });
 
 // === Authentication Routes ===
 
-app.post("/api/register", async (req, res) => {
-  const { email, password, name, avatar, bio } = req.body;
-  if (!email || !password || !name) return res.status(400).json({ error: "Missing required fields" });
+app.post("/api/register", upload.single("avatar"), async (req, res) => {
+  try {
+    const { email, password, name, username, bio } = req.body;
 
-  const { data: existingUser } = await supabase.from("users").select("*").eq("email", email).maybeSingle();
-  if (existingUser) return res.status(400).json({ error: "User already exists" });
+    if (!req.file) {
+      console.error("No file uploaded");
+      return res.status(400).json({ error: "Avatar upload failed" });
+    }
 
-  const hash = await bcrypt.hash(password, 10);
-  const { error } = await supabase.from("users").insert([{ email, password: hash, name, avatar, bio }]);
-  if (error) return res.status(500).json({ error: "Database error" });
+    const avatarUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
 
-  res.status(201).json({ message: "User registered successfully" });
+    const { data, error } = await supabase
+      .from("users")
+      .insert([{ email, name, username, avatar_url: avatarUrl, bio }]);
+
+    if (error) {
+      console.error("Supabase error:", error.message);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.status(201).json({ success: true });
+  } catch (err) {
+    console.error("Unexpected error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
 });
+
 
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
