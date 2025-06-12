@@ -11,37 +11,29 @@ require("dotenv").config();
 
 const app = express();
 const server = http.createServer(app);
-
-const FRONTEND_URL = "https://starhub-2cmo.vercel.app";
+const io = new Server(server, {
+  cors: {
+    origin: "https://starhub-2cmo.vercel.app",
+    methods: ["GET", "POST"]
+  }
+});
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const io = new Server(server, {
-  cors: {
-    origin: FRONTEND_URL,
-    methods: ["GET", "POST"]
-  }
-});
-
-app.use(cors({ origin: FRONTEND_URL }));
+app.use(cors({ origin: "https://starhub-2cmo.vercel.app" }));
 app.use(express.json());
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "yourSecretKey";
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "uploads"),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    const name = Date.now() + "-" + Math.round(Math.random() * 1e9) + ext;
-    cb(null, name);
-  }
-});
+// Multer with memoryStorage for Supabase Storage
+const storage = multer.memoryStorage();
 const upload = multer({ storage });
+
+// === Auth Routes ===
 
 app.post("/api/register", async (req, res) => {
   const { email, password, name, avatar, bio } = req.body;
@@ -83,12 +75,14 @@ app.get("/api/profile", async (req, res) => {
   }
 });
 
+// === Article Routes ===
+
 app.get("/api/articles", async (req, res) => {
   try {
     const { data, error } = await supabase.from("articles").select("*").order("created_at", { ascending: false });
     if (error) throw error;
     res.json(data);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Failed to fetch articles" });
   }
 });
@@ -125,11 +119,133 @@ app.post("/api/articles", async (req, res) => {
   }
 });
 
-app.post("/api/upload", upload.single("file"), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-  const url = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
-  res.status(200).json({ url });
+// === Post Like Route ===
+
+function authenticateToken(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth) return res.status(401).json({ error: "Missing token" });
+
+  try {
+    const token = auth.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch {
+    res.status(403).json({ error: "Invalid token" });
+  }
+}
+
+// Like or unlike a post
+app.post("/api/posts/:id/like", authenticateToken, async (req, res) => {
+  const userEmail = req.user.email;
+  const postId = req.params.id;
+
+  try {
+    // Get user ID from email
+    const { data: userData, error: userError } = await supabase
+      .from("users")
+      .select("id")
+      .eq("email", userEmail)
+      .maybeSingle();
+
+    if (userError || !userData) throw userError || new Error("User not found");
+
+    const userId = userData.id;
+
+    // Check if user already liked this post
+    const { data: existingLike, error } = await supabase
+      .from("post_likes")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("post_id", postId)
+      .maybeSingle();
+
+    if (error && error.code !== "PGRST116") throw error;
+
+    if (existingLike) {
+      // Unlike
+      await supabase.from("post_likes").delete().eq("id", existingLike.id);
+      res.json({ liked: false });
+    } else {
+      // Like
+      await supabase.from("post_likes").insert([{ user_id: userId, post_id: postId }]);
+      res.json({ liked: true });
+    }
+  } catch (err) {
+    console.error("❌ Like error:", err.message);
+    res.status(500).json({ error: "Failed to toggle like" });
+  }
 });
+
+// === Supabase Storage Upload Route ===
+
+app.post("/api/upload", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+  const file = req.file;
+  const ext = path.extname(file.originalname);
+  const filename = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}${ext}`;
+
+  try {
+    const { error: uploadError } = await supabase.storage
+      .from("media")
+      .upload(filename, file.buffer, {
+        contentType: file.mimetype,
+        upsert: false
+      });
+
+    if (uploadError) throw uploadError;
+
+    const { data: { publicUrl } } = supabase.storage.from("media").getPublicUrl(filename);
+    res.status(200).json({ url: publicUrl });
+  } catch (err) {
+    console.error("Upload failed:", err.message);
+    res.status(500).json({ error: "Failed to upload image" });
+  }
+});
+
+// === Comments ===
+
+// Create a comment on a post
+app.post("/api/posts/:postId/comments", async (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth) return res.status(401).json({ error: "Missing token" });
+
+  try {
+    const token = auth.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: "Comment text is required" });
+
+    const { data, error } = await supabase
+      .from("post_comments")
+      .insert([{ post_id: req.params.postId, user_id: decoded.email, text }])
+      .select();
+
+    if (error) throw error;
+    res.status(201).json(data[0]);
+  } catch {
+    res.status(500).json({ error: "Failed to post comment" });
+  }
+});
+
+// Get comments for a post
+app.get("/api/posts/:postId/comments", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("post_comments")
+      .select("id, text, created_at, user_id")
+      .eq("post_id", req.params.postId)
+      .order("created_at", { ascending: true });
+
+    if (error) throw error;
+    res.json(data);
+  } catch {
+    res.status(500).json({ error: "Failed to load comments" });
+  }
+});
+
+// === Messages and Chat ===
 
 app.get("/api/messages/:room", async (req, res) => {
   try {
@@ -155,6 +271,8 @@ app.get("/api/channels", async (req, res) => {
     res.status(500).json({ error: "Failed to load channels" });
   }
 });
+
+// === Socket.IO ===
 
 io.on("connection", (socket) => {
   console.log("🔌 Socket connected:", socket.id);
@@ -187,6 +305,8 @@ io.on("connection", (socket) => {
     console.log("❌ Socket disconnected:", socket.id);
   });
 });
+
+// === Start Server ===
 
 server.listen(PORT, () => {
   console.log("🚀 Server running on port " + PORT);
