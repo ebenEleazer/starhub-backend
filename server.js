@@ -38,19 +38,51 @@ app.post("/api/register", upload.single("avatar"), async (req, res) => {
   try {
     const { email, password, name, username, bio } = req.body;
 
-    if (!req.file) {
-      console.error("No file uploaded");
-      return res.status(400).json({ error: "Avatar upload failed" });
+    if (!email || !password || !username) {
+      return res.status(400).json({ error: "Email, password, and username are required" });
     }
 
-    const avatarUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
+    // Hash the password
+    const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Handle optional avatar
+    let avatarUrl = null;
+    if (req.file) {
+      const ext = path.extname(req.file.originalname);
+      const filename = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}${ext}`;
+
+      // Upload to Supabase storage
+      const { error: uploadError } = await supabase.storage
+        .from("media")
+        .upload(filename, req.file.buffer, {
+          contentType: req.file.mimetype,
+        });
+
+      if (uploadError) {
+        console.error("Supabase upload error:", uploadError.message);
+        return res.status(500).json({ error: "Avatar upload failed" });
+      }
+
+      const { data: { publicUrl } } = supabase.storage.from("media").getPublicUrl(filename);
+      avatarUrl = publicUrl;
+    }
+
+    // Insert user into Supabase
     const { data, error } = await supabase
       .from("users")
-      .insert([{ email, name, username, avatar_url: avatarUrl, bio }]);
+      .insert([
+        {
+          email,
+          password: hashedPassword,
+          name,
+          username,
+          avatar_url: avatarUrl,
+          bio,
+        },
+      ]);
 
     if (error) {
-      console.error("Supabase error:", error.message);
+      console.error("Supabase insert error:", error.message);
       return res.status(500).json({ error: error.message });
     }
 
@@ -60,7 +92,6 @@ app.post("/api/register", upload.single("avatar"), async (req, res) => {
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
 
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
