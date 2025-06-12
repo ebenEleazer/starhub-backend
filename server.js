@@ -14,7 +14,7 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "https://starhub-2cmo.vercel.app",
-    methods: ["GET", "POST"]
+    methods: ["GET", "POST", "PUT", "DELETE"]
   }
 });
 
@@ -29,11 +29,10 @@ app.use(express.json());
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "yourSecretKey";
 
-// Multer with memoryStorage for Supabase Storage
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-// === Auth Routes ===
+// === Authentication Routes ===
 
 app.post("/api/register", async (req, res) => {
   const { email, password, name, avatar, bio } = req.body;
@@ -61,6 +60,8 @@ app.post("/api/login", async (req, res) => {
   res.json({ token, profile: { email: user.email, name: user.name, avatar: user.avatar, bio: user.bio } });
 });
 
+// === Profile Routes ===
+
 app.get("/api/profile", async (req, res) => {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: "Missing token" });
@@ -74,6 +75,59 @@ app.get("/api/profile", async (req, res) => {
     res.status(403).json({ error: "Invalid token" });
   }
 });
+
+app.put("/api/profile", async (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth) return res.status(401).json({ error: "Missing token" });
+
+  try {
+    const token = auth.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { name, bio, avatar } = req.body;
+
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (bio !== undefined) updates.bio = bio;
+    if (avatar !== undefined) updates.avatar = avatar;
+
+    const { error } = await supabase.from("users").update(updates).eq("email", decoded.email);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(403).json({ error: err.message });
+  }
+});
+
+app.delete("/api/profile", async (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth) return res.status(401).json({ error: "Missing token" });
+
+  try {
+    const token = auth.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { error } = await supabase.from("users").delete().eq("email", decoded.email);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(403).json({ error: err.message });
+  }
+});
+
+// === Auth Middleware ===
+
+function authenticateToken(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth) return res.status(401).json({ error: "Missing token" });
+
+  try {
+    const token = auth.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch {
+    res.status(403).json({ error: "Invalid token" });
+  }
+}
 
 // === Article Routes ===
 
@@ -97,21 +151,12 @@ app.get("/api/articles/:id", async (req, res) => {
   }
 });
 
-app.post("/api/articles", async (req, res) => {
-  const auth = req.headers.authorization;
-  if (!auth) return res.status(401).json({ error: "Missing token" });
+app.post("/api/articles", authenticateToken, async (req, res) => {
+  const { title, content } = req.body;
+  if (!title || !content) return res.status(400).json({ error: "Title and content are required" });
 
   try {
-    const token = auth.split(" ")[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const { title, content } = req.body;
-    if (!title || !content) return res.status(400).json({ error: "Title and content are required" });
-
-    const { data, error } = await supabase
-      .from("articles")
-      .insert([{ title, content, author_email: decoded.email }])
-      .select();
-
+    const { data, error } = await supabase.from("articles").insert([{ title, content, author_email: req.user.email }]).select();
     if (error) throw error;
     res.status(201).json(data[0]);
   } catch {
@@ -119,56 +164,21 @@ app.post("/api/articles", async (req, res) => {
   }
 });
 
-// === Post Like Route ===
+// === Likes ===
 
-function authenticateToken(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth) return res.status(401).json({ error: "Missing token" });
-
+app.post("/api/articles/:id/like", authenticateToken, async (req, res) => {
   try {
-    const token = auth.split(" ")[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch {
-    res.status(403).json({ error: "Invalid token" });
-  }
-}
+    const { data: userData } = await supabase.from("users").select("id").eq("email", req.user.email).maybeSingle();
+    if (!userData) throw new Error("User not found");
 
-// Like or unlike a post
-app.post("/api/posts/:id/like", authenticateToken, async (req, res) => {
-  const userEmail = req.user.email;
-  const postId = req.params.id;
+    const { data: existing } = await supabase.from("article_likes").select("*")
+      .eq("user_id", userData.id).eq("article_id", req.params.id).maybeSingle();
 
-  try {
-    // Get user ID from email
-    const { data: userData, error: userError } = await supabase
-      .from("users")
-      .select("id")
-      .eq("email", userEmail)
-      .maybeSingle();
-
-    if (userError || !userData) throw userError || new Error("User not found");
-
-    const userId = userData.id;
-
-    // Check if user already liked this post
-    const { data: existingLike, error } = await supabase
-      .from("post_likes")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("post_id", postId)
-      .maybeSingle();
-
-    if (error && error.code !== "PGRST116") throw error;
-
-    if (existingLike) {
-      // Unlike
-      await supabase.from("post_likes").delete().eq("id", existingLike.id);
+    if (existing) {
+      await supabase.from("article_likes").delete().eq("id", existing.id);
       res.json({ liked: false });
     } else {
-      // Like
-      await supabase.from("post_likes").insert([{ user_id: userId, post_id: postId }]);
+      await supabase.from("article_likes").insert([{ user_id: userData.id, article_id: req.params.id }]);
       res.json({ liked: true });
     }
   } catch (err) {
@@ -177,51 +187,69 @@ app.post("/api/posts/:id/like", authenticateToken, async (req, res) => {
   }
 });
 
-// === Supabase Storage Upload Route ===
+app.get("/api/articles/:id/likes", async (req, res) => {
+  const articleId = req.params.id;
+  let userLiked = false;
+  try {
+    const { count, error } = await supabase
+      .from("article_likes")
+      .select("*", { count: "exact", head: true })
+      .eq("article_id", articleId);
+    if (error) throw error;
+
+    const auth = req.headers.authorization;
+    if (auth) {
+      const token = auth.split(" ")[1];
+      const decoded = jwt.verify(token, JWT_SECRET);
+      const { data: user } = await supabase.from("users").select("id").eq("email", decoded.email).maybeSingle();
+      if (user) {
+        const { data: like } = await supabase.from("article_likes")
+          .select("id")
+          .eq("user_id", user.id)
+          .eq("article_id", articleId)
+          .maybeSingle();
+        userLiked = !!like;
+      }
+    }
+
+    res.json({ count, liked: userLiked });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to get likes" });
+  }
+});
+
+// === Upload Route ===
 
 app.post("/api/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-  const file = req.file;
-  const ext = path.extname(file.originalname);
+  const ext = path.extname(req.file.originalname);
   const filename = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}${ext}`;
 
   try {
-    const { error: uploadError } = await supabase.storage
-      .from("media")
-      .upload(filename, file.buffer, {
-        contentType: file.mimetype,
-        upsert: false
-      });
-
-    if (uploadError) throw uploadError;
+    const { error } = await supabase.storage.from("media").upload(filename, req.file.buffer, {
+      contentType: req.file.mimetype
+    });
+    if (error) throw error;
 
     const { data: { publicUrl } } = supabase.storage.from("media").getPublicUrl(filename);
     res.status(200).json({ url: publicUrl });
   } catch (err) {
-    console.error("Upload failed:", err.message);
     res.status(500).json({ error: "Failed to upload image" });
   }
 });
 
 // === Comments ===
 
-// Create a comment on a post
-app.post("/api/posts/:postId/comments", async (req, res) => {
-  const auth = req.headers.authorization;
-  if (!auth) return res.status(401).json({ error: "Missing token" });
+app.post("/api/posts/:postId/comments", authenticateToken, async (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: "Comment text is required" });
 
   try {
-    const token = auth.split(" ")[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const { text } = req.body;
-    if (!text) return res.status(400).json({ error: "Comment text is required" });
-
-    const { data, error } = await supabase
-      .from("post_comments")
-      .insert([{ post_id: req.params.postId, user_id: decoded.email, text }])
-      .select();
-
+    const { data: user } = await supabase.from("users").select("id").eq("email", req.user.email).maybeSingle();
+    const { data, error } = await supabase.from("post_comments").insert([
+      { post_id: req.params.postId, user_id: user.id, text }
+    ]).select();
     if (error) throw error;
     res.status(201).json(data[0]);
   } catch {
@@ -229,7 +257,6 @@ app.post("/api/posts/:postId/comments", async (req, res) => {
   }
 });
 
-// Get comments for a post
 app.get("/api/posts/:postId/comments", async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -237,7 +264,6 @@ app.get("/api/posts/:postId/comments", async (req, res) => {
       .select("id, text, created_at, user_id")
       .eq("post_id", req.params.postId)
       .order("created_at", { ascending: true });
-
     if (error) throw error;
     res.json(data);
   } catch {
@@ -245,22 +271,7 @@ app.get("/api/posts/:postId/comments", async (req, res) => {
   }
 });
 
-// === Messages and Chat ===
-
-app.get("/api/messages/:room", async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from("messages")
-      .select("*")
-      .eq("room", req.params.room)
-      .order("created_at", { ascending: true });
-
-    if (error) throw error;
-    res.json(data);
-  } catch {
-    res.status(500).json({ error: "Failed to load messages" });
-  }
-});
+// === Channels & Messages ===
 
 app.get("/api/channels", async (req, res) => {
   try {
@@ -272,32 +283,36 @@ app.get("/api/channels", async (req, res) => {
   }
 });
 
-// === Socket.IO ===
+app.get("/api/messages/:room", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("room", req.params.room)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    res.json(data);
+  } catch {
+    res.status(500).json({ error: "Failed to load messages" });
+  }
+});
+
+// === Real-time Chat (Socket.io) ===
 
 io.on("connection", (socket) => {
   console.log("🔌 Socket connected:", socket.id);
 
   socket.on("joinRoom", (room) => {
     socket.join(room);
-    console.log(`User ${socket.id} joined room ${room}`);
   });
 
   socket.on("chatMessage", async ({ room, message, sender = "anonymous" }) => {
-    const msgObj = {
-      room,
-      message,
-      sender,
-      created_at: new Date().toISOString()
-    };
-
+    const msg = { room, message, sender, created_at: new Date().toISOString() };
     try {
-      const { error } = await supabase.from("messages").insert([msgObj]);
-      if (error) throw error;
-
-      io.to(room).emit("chatMessage", msgObj);
-      console.log("📨 Broadcasted:", msgObj);
+      await supabase.from("messages").insert([msg]);
+      io.to(room).emit("chatMessage", msg);
     } catch (err) {
-      console.error("❌ Error saving message:", err.message);
+      console.error("❌ Chat message error:", err.message);
     }
   });
 
