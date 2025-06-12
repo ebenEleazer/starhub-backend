@@ -67,7 +67,8 @@ password = hashedPassword;
 
       // Upload to Supabase storage
       const { error: uploadError } = await supabase.storage
-        .from("media")
+  .from("chat-uploads") // ✅ your existing bucket
+
         .upload(filename, req.file.buffer, {
           contentType: req.file.mimetype,
         });
@@ -77,8 +78,9 @@ password = hashedPassword;
         return res.status(500).json({ error: "Avatar upload failed" });
       }
 
-      const { data: { publicUrl } } = supabase.storage.from("media").getPublicUrl(filename);
-      avatarUrl = publicUrl;
+      const { data } = supabase.storage.from("media").getPublicUrl(filename);
+avatarUrl = data.publicUrl;
+
     }
 
     // Insert user into Supabase
