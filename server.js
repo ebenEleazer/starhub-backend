@@ -7,6 +7,8 @@ const multer = require("multer");
 const path = require("path");
 const { Server } = require("socket.io");
 const { createClient } = require("@supabase/supabase-js");
+const fs = require("fs");
+const path = require("path");
 require("dotenv").config();
 
 const app = express();
@@ -25,25 +27,38 @@ const supabase = createClient(
 
 app.use(cors({ origin: "https://starhub-2cmo.vercel.app" }));
 app.use(express.json());
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "yourSecretKey";
 
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit (optional)
+});
 
 // === Authentication Routes ===
 
 app.post("/api/register", upload.single("avatar"), async (req, res) => {
   try {
-    const { email, password, name, username, bio } = req.body;
+    const { email, name, username, bio } = req.body;
+let { password } = req.body;
+
 
     if (!email || !password || !username) {
       return res.status(400).json({ error: "Email, password, and username are required" });
     }
 
-    // Hash the password
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // Validate password length
+if (password.length < 6) {
+  return res.status(400).json({ error: "Password must be at least 6 characters long" });
+}
+
+// Hash the password
+const hashedPassword = await bcrypt.hash(password, 10);
+password = hashedPassword;
+
 
     // Handle optional avatar
     let avatarUrl = null;
@@ -73,7 +88,7 @@ app.post("/api/register", upload.single("avatar"), async (req, res) => {
       .insert([
         {
           email,
-          password: hashedPassword,
+          password,
           name,
           username,
           avatar_url: avatarUrl,
@@ -118,6 +133,48 @@ app.get("/api/profile", async (req, res) => {
     res.json(user);
   } catch {
     res.status(403).json({ error: "Invalid token" });
+  }
+});
+
+// Update profile (name, bio, avatar)
+app.put("/api/profile", upload.single("avatar"), authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  const { name, bio } = req.body;
+  let avatarUrl = null;
+
+  if (req.file) {
+    const filename = `avatar-${Date.now()}-${req.file.originalname}`;
+    const filePath = path.join(__dirname, "uploads", filename);
+    fs.writeFileSync(filePath, req.file.buffer);
+    avatarUrl = `/uploads/${filename}`;
+  }
+
+  try {
+    const updates = { name, bio };
+    if (avatarUrl) updates.avatar_url = avatarUrl;
+
+    const { error } = await supabase.from("users").update(updates).eq("id", userId);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update profile" });
+  }
+});
+
+// Delete account
+app.delete("/api/account", authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const { error } = await supabase.from("users").delete().eq("id", userId);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete account" });
   }
 });
 
