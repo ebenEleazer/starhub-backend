@@ -8,7 +8,6 @@ const path = require("path");
 const { Server } = require("socket.io");
 const { createClient } = require("@supabase/supabase-js");
 const fs = require("fs");
-const path = require("path");
 require("dotenv").config();
 
 const app = express();
